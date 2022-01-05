@@ -33,8 +33,7 @@
     margin-left: 11em;
     font-family:Shadows Into Light;
 }
-#userList1 {
-    list-style-type: none;
+#userList1{
     border-width: 3px 4px 3px 5px;
     border-radius:95% 4% 92% 5%/4% 95% 6% 95%;
     box-shadow: 2px 3px 20px black, 0 0 20px #8a4d0f inset;
@@ -46,8 +45,7 @@
     grid-row: 2;
     border:2px solid;
 }
-#userList2 {
-    list-style-type: none;
+#userList2{ 
     border-width: 3px 4px 3px 5px;
     border-radius:95% 4% 92% 5%/4% 95% 6% 95%;
     box-shadow: 2px 3px 20px black, 0 0 20px #8a4d0f inset;
@@ -99,7 +97,7 @@
     
 }
 
-.countdown_text {
+#countdown_text {
     grid-row: 3;
     grid-column: 2;
     margin: 10% auto;

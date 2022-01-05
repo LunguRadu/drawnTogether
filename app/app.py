@@ -6,14 +6,13 @@ Radu Lungu
 """
 
 import json
-import math
 import random
 
 import sqlalchemy.exc
 
 from flask import Flask, render_template, request
 from flask_sqlalchemy import SQLAlchemy
-from flask_socketio import SocketIO, send, join_room, emit, leave_room
+from flask_socketio import SocketIO, send, join_room, emit
 
 # Configuring the flask app and the SQLAlchemy database
 app = Flask(__name__)
@@ -29,7 +28,6 @@ class User(db.Model):
     username = db.Column(db.String(200), primary_key=True, nullable=False)
     team = db.Column(db.Integer)
     drawer = db.Column(db.Boolean)
-    inGame = db.Column(db.Boolean)
 
     def __repr__(self):
         return self.username
@@ -48,44 +46,30 @@ class Data(db.Model):
 # General Socket.io function to handle unnamed incoming messages
 @socketio.on('message')
 def handleMessage(msg):
-    emit('message', msg, room=msg.get('room'), include_self=False)
-
-
-@socketio.on('load_canvas')
-def handleLoadCanvas(msg):
-    emit('load_canvas', msg.get('from'), room=msg.get('team'), include_self=False)
-
-
-@socketio.on('send_canvas')
-def handleSendCanvas(msg):
-    room = User.query.get(msg.get('room')).id
-    del msg['room']
-    emit('message', msg, room=room, include_self=False)
+    json_data = json.loads(msg)
+    emit('message', msg, room=json_data.get('room'), include_self=False)
 
 
 # App endpoint to expose the playing room based on users
 @app.route('/play/<username>')
 def play(username):
     # Querying the database for various state variables
-    user = User.query.get(username)
-    # user.inGame = True
-    db.session.commit()
-    base_team = math.floor(user.team / 2) * 2
-    team1 = User.query.filter_by(team=base_team)
-    team2 = User.query.filter_by(team=base_team + 1)
-    team1_score = Data.query.get('team' + str(base_team) + '_score')
-    team2_score = Data.query.get('team' + str(base_team + 1) + '_score')
+    team1 = User.query.filter_by(team=0)
+    team2 = User.query.filter_by(team=1)
+    team1_score = Data.query.filter_by(type='team0_score').first()
     team1_score = 0 if team1_score is None else team1_score
+    team2_score = Data.query.filter_by(type='team1_score').first()
     team2_score = 0 if team2_score is None else team2_score
+    user = User.query.filter_by(username=username).first()
 
     # Getting a random noun from the local work bank and copying it to the database
     try:
         word = get_random_noun()
-        db.session.add(Data(type='baseTeam' + str(base_team) + '_word', value=word))
+        db.session.add(Data(type='word', value=word))
         db.session.commit()
     except sqlalchemy.exc.IntegrityError:
         db.session.rollback()
-        word = Data.query.get('baseTeam' + str(base_team) + '_word').value
+        word = Data.query.filter_by(type='word').first().value
 
     # Render the html template with the above state variables
     return render_template("draw.html",
@@ -102,56 +86,48 @@ def play(username):
 # App endpoint to expose the lobby page
 @app.route('/')
 def lobby():
-    return render_template("index.html", users=User.query.filter_by(inGame=False))
+    return render_template("index.html", users=User.query.all())
 
 
 # Socket.io function to handle new users joining the game
 @socketio.on('joinUsername')
 def receive_username(username):
-    user_count = User.query.count()
     try:
         # Check that the user is not in the database already, according to sid
         if User.query.filter_by(id=request.sid).first() is None:
+            len_team1 = User.query.filter_by(team=0).count()
+            len_team2 = User.query.filter_by(team=1).count()
 
             # Add user to database based on teams lenght
-            team = (user_count % 2) + math.floor(user_count / 8) * 2
-            length = User.query.filter_by(team=team).count()
-            add_teamMember(team, username, length)
-            emit('message', {'username': username, 'team': team}, broadcast=True)
-
-            # If there are more than 4 users, start the game and move all users to the play room.
-            user_count += 1
-            if user_count % 4 == 0:
-                if user_count % 8 == 0:
-                    for user in User.query.all():
-                        user.inGame = True
-                    db.session.commit()
-                    emit('max_users_reached', broadcast=True)
-                    send("startGameMessage", to=request.sid, broadcast=False)
-                else:
-                    send("startGameMessage", broadcast=True)
-            elif user_count % 8 > 4:
-                send("startGameMessage", to=request.sid, broadcast=False)
+            if len_team1 <= len_team2:
+                add_teamMember(0, username, len_team1)
+                team = 0
+            else:
+                add_teamMember(1, username, len_team2)
+                team = 1
+            send(json.dumps({'username': username, 'team': team}), broadcast=True)
         else:
             send("userErrorMessage")
     except sqlalchemy.exc.IntegrityError:
         send("userErrorMessage")
 
+    # If there are more than 4 users, start the game and move all users to the play room.
+    if User.query.count() >= 4:
+        send("startGameMessage", broadcast=True)
+
 
 # Socket.io function to add users to specific rooms
 @socketio.on('join_room')
 def add_to_room(msg):
-    join_room(msg.get('team'))
-    User.query.get(msg.get('username')).id = request.sid
-    db.session.commit()
+    join_room(msg)
 
 
 # Function to add users to the database
 def add_teamMember(team, username, length):
     if length == 0:
-        new_user = User(id=request.sid, username=username, team=team, drawer=True, inGame=False)
+        new_user = User(id=request.sid, username=username, team=team, drawer=True)
     else:
-        new_user = User(id=request.sid, username=username, team=team, drawer=False, inGame=False)
+        new_user = User(id=request.sid, username=username, team=team, drawer=False)
     db.session.add(new_user)
     db.session.commit()
 
@@ -166,23 +142,21 @@ def get_random_noun():
 @socketio.on('guess')
 def validate_guess(msg):
     # Query the database for the current word to guess
-    existing_word = Data.query.get('baseTeam' + str(math.floor(msg['team'] / 2) * 2) + '_word').value
+    existing_word = Data.query.filter_by(type='word').first().value
+
     # If the team guess is equal to the word in the database
     if msg['guess'].casefold() == existing_word.casefold():
         # Reset the word and update score
-        reset(msg['team'])
+        reset()
         score = updateScore(msg['team'])
 
         # If score is 5 then restart the game
-        base_team = math.floor(msg['team'] / 2) * 2
         if score == 5:
-            # emit('max_users_reached', broadcast=True)
-            delete_users(base_team)
-            emit('message', 'reset', room=str(base_team))
-            emit('message', 'reset', room=str(base_team + 1))
+            db.drop_all()
+            db.create_all()
+            send('reset', broadcast=True)
         else:
-            emit('message', 'game_over', room=str(base_team))
-            emit('message', 'game_over', room=str(base_team + 1))
+            send('game_over', broadcast=True)
 
 
 # Function to update score based on the team
@@ -200,30 +174,19 @@ def updateScore(team):
 
 
 # Function to reset the word to guess in the database
-def reset(team):
-    base_team = math.floor(team / 2) * 2
-    word = Data.query.get('baseTeam' + str(base_team) + '_word')
+def reset():
+    word = Data.query.get('word')
     db.session.delete(word)
     db.session.commit()
 
 
-def delete_users(base_team):
-    for user in User.query.filter((User.team == base_team) | (User.team == base_team + 1)).all():
-        db.session.delete(user)
-    db.session.commit()
-
-
-@socketio.on('delete_user')
-def delete_user(msg):
-    user = User.query.get(msg)
-    leave_room(str(user.team))
-    db.session.delete(user)
-    db.session.commit()
-    base_team = math.floor(user.team / 2) * 2
-    if user.drawer:
-        delete_users(base_team)
-        emit('message', 'force_reset', room=str(base_team))
-        emit('message', 'force_reset', room=str(base_team + 1))
+# @socketio.on('delete_user')
+# def delete_user(msg):
+#     print("Here: " + msg)
+#     user = User.query.get(msg)
+#     leave_room(str(user.team))
+#     db.session.delete(user)
+#     db.session.commit()
 
 
 if __name__ == '__main__':
